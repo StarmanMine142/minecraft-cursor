@@ -1,0 +1,250 @@
+package io.github.fishstiz.cursors_extended.cursor;
+
+import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.platform.cursor.CursorType;
+import io.github.fishstiz.cursors_extended.resource.CursorResourceLoader;
+import io.github.fishstiz.cursors_extended.CursorsExtended;
+import io.github.fishstiz.cursors_extended.config.Config;
+import io.github.fishstiz.cursors_extended.util.NativeImageUtil;
+import io.github.fishstiz.cursors_extended.util.SettingsUtil;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.lwjgl.glfw.GLFW;
+import org.lwjgl.glfw.GLFWImage;
+import org.lwjgl.system.MemoryUtil;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.function.Consumer;
+
+import static io.github.fishstiz.cursors_extended.util.SettingsUtil.*;
+
+public class Cursor {
+    private static final String IMG_TYPE = ".png";
+    private final @Nullable Consumer<Cursor> onLoad;
+    private final CursorType type;
+    private final ResourceLocation location;
+    private Component text;
+    private String base64Image;
+    private double scale;
+    private int xhot;
+    private int yhot;
+    private boolean enabled;
+    private boolean loaded;
+    private int textureWidth;
+    private int textureHeight;
+    private long id = MemoryUtil.NULL;
+
+    Cursor(CursorType type, @Nullable Consumer<Cursor> onLoad) {
+        this.type = type;
+        this.onLoad = onLoad;
+        this.location = CursorResourceLoader.getDirectory().withSuffix(type.toString() + IMG_TYPE);
+    }
+
+    Cursor(Cursor cursor) {
+        this(cursor.type, cursor.onLoad);
+    }
+
+    void loadImage(@NotNull NativeImage image, Config.Settings settings) throws IOException {
+        try {
+            int imageWidth = image.getWidth();
+            int imageHeight = image.getHeight();
+            SettingsUtil.assertImageSize(imageWidth, imageHeight);
+
+            NativeImage croppedImage = null;
+            try {
+                if (imageHeight > imageWidth) {
+                    // noinspection SuspiciousNameCombination
+                    croppedImage = NativeImageUtil.cropImage(image, 0, 0, imageWidth, imageWidth);
+                }
+
+                NativeImage validImage = croppedImage != null ? croppedImage : image;
+                this.base64Image = NativeImageUtil.toBase64String(validImage);
+                this.enabled = settings.isEnabled();
+                this.textureWidth = imageWidth;
+                this.textureHeight = imageHeight;
+
+                create(validImage, settings.getScale(), settings.getXHot(), settings.getYHot());
+            } finally {
+                if (croppedImage != null) {
+                    croppedImage.close();
+                }
+            }
+        } catch (Exception e) {
+            this.destroy();
+            throw e;
+        }
+    }
+
+    protected void updateImage(double scale, int xhot, int yhot) {
+        if (!this.isLoaded()) {
+            return;
+        }
+
+        try (NativeImage image = NativeImageUtil.fromBase64String(base64Image)) {
+            create(image, scale, xhot, yhot);
+        } catch (IOException e) {
+            CursorsExtended.LOGGER.error("Error updating image of {}: {}", type, e);
+        }
+    }
+
+    private void create(NativeImage image, double scale, int xhot, int yhot) {
+        scale = sanitizeScale(scale);
+        xhot = sanitizeHotspot(xhot, image.getWidth());
+        yhot = sanitizeHotspot(yhot, image.getWidth());
+
+        long previousId = this.id;
+        ByteBuffer pixels = null;
+
+        double autoScaled = getAutoScale(scale);
+        try (NativeImage scaledImage = scale == 1 ? image : NativeImageUtil.scaleImage(image, autoScaled)) {
+            int scaledXHot = scale == 1 ? xhot : (int) Math.round(xhot * autoScaled);
+            int scaledYHot = scale == 1 ? yhot : (int) Math.round(yhot * autoScaled);
+            int scaledWidth = scaledImage.getWidth();
+            int scaledHeight = scaledImage.getHeight();
+
+            GLFWImage glfwImage = GLFWImage.create();
+            pixels = MemoryUtil.memAlloc(scaledWidth * scaledHeight * 4);
+            NativeImageUtil.writePixelsRGBA(scaledImage, pixels);
+            glfwImage.set(scaledWidth, scaledHeight, pixels);
+
+            this.id = GLFW.glfwCreateCursor(glfwImage, scaledXHot, scaledYHot);
+            if (this.id == MemoryUtil.NULL) {
+                CursorsExtended.LOGGER.error("[cursors-extended] Error creating cursor '{}'. ", this.type);
+                return;
+            }
+
+            loaded = true;
+            this.scale = scale;
+            this.xhot = xhot;
+            this.yhot = yhot;
+
+            if (this.onLoad != null) {
+                this.onLoad.accept(this);
+            }
+        } finally {
+            if (pixels != null) {
+                MemoryUtil.memFree(pixels);
+            }
+            if (previousId != MemoryUtil.NULL && this.id != previousId) {
+                GLFW.glfwDestroyCursor(previousId);
+            }
+        }
+    }
+
+    public void destroy() {
+        if (this.id != MemoryUtil.NULL) {
+            GLFW.glfwDestroyCursor(this.id);
+            this.id = MemoryUtil.NULL;
+        }
+    }
+
+    public void reload() {
+        if (this.isLoaded()) {
+            this.updateImage(this.getScale(), this.getXHot(), this.getYHot());
+        }
+    }
+
+    public void apply(Config.Settings settings) {
+        this.enable(settings.isEnabled());
+        this.updateImage(settings.getScale(), settings.getXHot(), settings.getYHot());
+    }
+
+    public void enable(boolean enabled) {
+        boolean previous = this.enabled;
+        this.enabled = enabled;
+
+        if (previous != this.enabled && this.isLoaded() && this.onLoad != null) {
+            this.onLoad.accept(this);
+        }
+    }
+
+    public ResourceLocation getLocation() {
+        return this.location;
+    }
+
+    public long getId() {
+        return enabled ? id : MemoryUtil.NULL;
+    }
+
+    public @NotNull CursorType getType() {
+        return type;
+    }
+
+    public @NotNull String getTypeName() {
+        return type.toString();
+    }
+
+    public @NotNull Component getText() {
+        if (this.text == null) {
+            this.text = Component.translatable("cursors_extended.options.cursor-type." + type.toString());
+        }
+        return this.text;
+    }
+
+    public double getScale() {
+        return this.scale;
+    }
+
+    public void setScale(double scale) {
+        updateImage(scale, this.xhot, this.yhot);
+    }
+
+    public int getXHot() {
+        return this.xhot;
+    }
+
+    public void setXHot(double xhot) {
+        setXHot((int) xhot);
+    }
+
+    public void setXHot(int xhot) {
+        updateImage(this.scale, xhot, this.yhot);
+    }
+
+    public int getYHot() {
+        return this.yhot;
+    }
+
+    public void setYHot(double yhot) {
+        setYHot((int) yhot);
+    }
+
+    public void setYHot(int yhot) {
+        updateImage(this.scale, this.xhot, yhot);
+    }
+
+    public boolean isEnabled() {
+        return enabled && isLoaded();
+    }
+
+    public boolean isLoaded() {
+        return this.loaded && this.id != MemoryUtil.NULL;
+    }
+
+    public int getTextureIndex() {
+        return 0;
+    }
+
+    public int getTextureWidth() throws IllegalStateException {
+        assertLoaded();
+        return textureWidth;
+    }
+
+    public int getTextureHeight() throws IllegalStateException {
+        assertLoaded();
+        return textureHeight;
+    }
+
+    private void assertLoaded() {
+        if (!this.isLoaded()) {
+            throw new IllegalStateException("Cursor has not been loaded");
+        }
+    }
+
+    static Cursor createDummy() {
+        return new Cursor(CursorType.DEFAULT, null);
+    }
+}

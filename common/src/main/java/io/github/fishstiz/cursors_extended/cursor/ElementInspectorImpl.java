@@ -1,0 +1,181 @@
+package io.github.fishstiz.cursors_extended.cursor;
+
+import io.github.fishstiz.cursors_extended.platform.Services;
+import io.github.fishstiz.cursors_extended.util.CursorTypeUtil;
+import io.github.fishstiz.cursors_extended.util.DrawUtil;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.events.ContainerEventHandler;
+import net.minecraft.client.gui.components.events.GuiEventListener;
+import net.minecraft.client.gui.layouts.LayoutElement;
+import net.minecraft.client.gui.navigation.ScreenRectangle;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.TextColor;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.joml.Matrix3x2fStack;
+
+class ElementInspectorImpl implements ElementInspector {
+    private static final float TEXT_SCALE = 0.75f;
+    private final Component screenLabel = Component.literal("S: ").withColor(0xFF339BFF); // blue
+    private final Component deepestLabel = Component.literal("D: ").withColor(0xFF00FF00); // green
+    private final Component inspectedLabel = Component.literal("I: ").withColor(0xFFFF0000); // red
+    private final Component virtualModeLabel = Component.literal("Virtual Mode: ").withStyle(ChatFormatting.GOLD);
+    private GuiEventListener processed;
+    private String inspected;
+    private boolean enabled = true;
+
+    @Override
+    public boolean isInspecting() {
+        return this.enabled;
+    }
+
+    @Override
+    public void destroy() {
+        this.enabled = false;
+        this.processed = null;
+        this.inspected = null;
+    }
+
+    @Override
+    public boolean setInspected(GuiEventListener processed, boolean cached) {
+        this.processed = processed;
+        this.inspected = getClassName(processed);
+        return true;
+    }
+
+    @Override
+    public void render(Minecraft minecraft, @NotNull Screen screen, GuiGraphics guiGraphics, double mouseX, double mouseY) {
+        if (this.enabled) {
+            ScreenRectangle screenRectangle = getBounds(screen);
+            renderScreenName(minecraft, screen, screenRectangle, guiGraphics);
+            renderInspected(minecraft, renderDeepest(minecraft, screen, guiGraphics, mouseX, mouseY), guiGraphics);
+            renderVirtualInfo(minecraft, screenRectangle, guiGraphics);
+        }
+    }
+
+    private ScreenRectangle renderDeepest(Minecraft minecraft, Screen screen, GuiGraphics guiGraphics, double mouseX, double mouseY) {
+        GuiEventListener child = findDeepest(screen, mouseX, mouseY);
+        GuiEventListener inspect = child != null ? child : screen;
+        ScreenRectangle bounds = getBounds(inspect);
+        Component label = deepestLabel.copy().append(getClassName(inspect));
+        renderInfo(minecraft, guiGraphics, bounds, label, Position.TOP_LEFT, true);
+        return bounds;
+    }
+
+    private void renderInspected(Minecraft minecraft, ScreenRectangle container, GuiGraphics guiGraphics) {
+        if (processed != null) {
+            Component label = inspectedLabel.copy().append(inspected);
+            ScreenRectangle bounds = getBounds(processed);
+            int index = bounds.top() != container.top() ? 0 : 1;
+            this.renderInfo(minecraft, guiGraphics, bounds, label, Position.TOP_LEFT, index, true);
+        }
+    }
+
+    private void renderScreenName(Minecraft minecraft, Screen screen, ScreenRectangle bounds, GuiGraphics guiGraphics) {
+        Component label = screenLabel.copy().append(getClassName(screen));
+        this.renderInfo(minecraft, guiGraphics, bounds, label, Position.BOTTOM_RIGHT, false);
+    }
+
+    private void renderVirtualInfo(Minecraft minecraft, ScreenRectangle screenBounds, GuiGraphics guiGraphics) {
+        Component virtualMode = virtualModeLabel.copy().append(CursorManager.INSTANCE.isVirtual() ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF);
+        renderInfo(minecraft, guiGraphics, screenBounds, virtualMode, Position.TOP_RIGHT, false);
+    }
+
+    private void renderInfo(Minecraft minecraft, GuiGraphics guiGraphics, ScreenRectangle bounds, Component label, Position pos, boolean outline) {
+        this.renderInfo(minecraft, guiGraphics, bounds, label, pos, 0, outline);
+    }
+
+    private void renderInfo(Minecraft minecraft, GuiGraphics guiGraphics, ScreenRectangle bounds, Component label, Position pos, int index, boolean outline) {
+        TextColor textColor = label.getStyle().getColor();
+        int color = 0xFF000000 | (textColor != null ? textColor.getValue() : 0xFFFFFFFF);
+
+        int textX = pos.getX(minecraft, bounds, label, TEXT_SCALE);
+        int textY = pos.getY(minecraft, bounds, index, TEXT_SCALE);
+
+        Matrix3x2fStack matrix3x2fStack = guiGraphics.pose().pushMatrix();
+        guiGraphics.nextStratum();
+        if (outline) DrawUtil.renderOutline(guiGraphics, bounds.left(), bounds.top(), bounds.width(), bounds.height(), color);
+        matrix3x2fStack.translate(TEXT_SCALE, TEXT_SCALE);
+        matrix3x2fStack.scale(TEXT_SCALE, TEXT_SCALE);
+        guiGraphics.drawString(minecraft.font, label, textX, textY, color);
+        matrix3x2fStack.popMatrix();
+    }
+
+    private ScreenRectangle getBounds(@Nullable GuiEventListener element) {
+        if (element instanceof LayoutElement layoutElement) {
+            return layoutElement.getRectangle();
+        }
+        return element != null ? element.getRectangle() : ScreenRectangle.empty();
+    }
+
+    private String getClassName(GuiEventListener element) {
+        String namespace = Services.PLATFORM.isDevelopmentEnvironment() ? "named" : "intermediary";
+        return Services.PLATFORM.unmapClassName(namespace, element.getClass().getName());
+    }
+
+    private static @Nullable GuiEventListener findDeepest(ContainerEventHandler parent, double mouseX, double mouseY) {
+        if (CursorTypeUtil.isHovered(parent, mouseX, mouseY)) {
+            for (GuiEventListener child : parent.children()) {
+                if (child instanceof ContainerEventHandler nestedParent) {
+                    GuiEventListener nestedChild = findDeepest(nestedParent, mouseX, mouseY);
+                    if (nestedChild != null) {
+                        return nestedChild;
+                    }
+                }
+                if (CursorTypeUtil.isHovered(child, mouseX, mouseY)) {
+                    return child;
+                }
+            }
+        }
+        return null;
+    }
+
+    public enum Position {
+        TOP_LEFT,
+        TOP_RIGHT,
+        BOTTOM_LEFT,
+        BOTTOM_RIGHT;
+
+        private static final int PADDING = 2;
+
+        public int getX(Minecraft minecraft, ScreenRectangle bounds, Component text, float scale) {
+            int screenWidth = minecraft.getWindow().getGuiScaledWidth();
+            int textWidth = minecraft.font.width(text);
+
+            int x = switch (this) {
+                case TOP_LEFT, BOTTOM_LEFT -> (int) ((bounds.left() + PADDING) / scale);
+                case TOP_RIGHT, BOTTOM_RIGHT -> {
+                    int unscaledX = bounds.left() + bounds.width() - (int) (textWidth * scale) - PADDING;
+                    yield (int) (unscaledX / scale);
+                }
+            };
+
+            if ((x + textWidth) * scale > screenWidth) {
+                x = (int) ((screenWidth - textWidth * scale - PADDING) / scale);
+                if (x < 0) x = 0;
+            }
+
+            return x;
+        }
+
+        public int getY(Minecraft minecraft, ScreenRectangle bounds, int index, float scale) {
+            int screenHeight = minecraft.getWindow().getGuiScaledHeight();
+            int textHeight = minecraft.font.lineHeight;
+            int offsetY = index * textHeight;
+
+            return switch (this) {
+                case TOP_LEFT, TOP_RIGHT -> (int) ((bounds.top() + PADDING + offsetY) / scale);
+                case BOTTOM_LEFT, BOTTOM_RIGHT -> {
+                    if (bounds.height() == 0 && bounds.width() == 0) {
+                        yield (int) ((screenHeight - textHeight - PADDING - offsetY) / scale);
+                    }
+                    yield (int) ((bounds.top() - PADDING + Math.max(0, bounds.height() - textHeight) + offsetY) / scale);
+                }
+            };
+        }
+    }
+}

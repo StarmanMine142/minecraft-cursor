@@ -26,6 +26,18 @@ repositories {
         )
         filter { includeGroup('org.parchmentmc.data') }
     }
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = 'Fabric'
+                url = uri('https://maven.fabricmc.net')
+            }
+        }
+        filter {
+            includeGroup('net.fabricmc')
+            includeGroup('fabric-loom')
+        }
+    }
 }
 
 sourceSets {
@@ -54,7 +66,6 @@ def configureResourceExpansion = { CopySpec spec ->
             'minecraft_version_range_semver': minecraft_version_range_semver,
             'fabric_loader_version'         : fabric_loader_version,
             'neoforge_loader_version_range' : neoforge_loader_version_range,
-            'neoforge_mod_id'               : neoforge_mod_id,
             'neoforge_version'              : neoforge_version,
             'neoforge_version_range'        : neoforge_version_range,
             'java_version'                  : java_version,

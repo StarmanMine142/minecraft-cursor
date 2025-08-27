@@ -20,13 +20,10 @@
   "environment": "client",
   "entrypoints": {
     "client": [
-      "io.github.fishstiz.minecraftcursor.MinecraftCursorFabric"
+      "io.github.fishstiz.cursors_extended.CursorsExtendedFabric"
     ],
     "modmenu": [
-      "io.github.fishstiz.minecraftcursor.compat.modmenu.MinecraftCursorModMenu"
-    ],
-    "minecraft-cursor": [
-      "io.github.fishstiz.minecraftcursor.impl.MinecraftCursorFabricInitializer"
+      "io.github.fishstiz.cursors_extended.compat.modmenu.CursorsExtendedModMenu"
     ]
   },
   "mixins": [

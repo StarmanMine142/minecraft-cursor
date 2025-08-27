@@ -1,0 +1,201 @@
+package io.github.fishstiz.cursors_extended.cursor;
+
+import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.platform.cursor.CursorType;
+import io.github.fishstiz.cursors_extended.CursorsExtended;
+import io.github.fishstiz.cursors_extended.config.AnimationData;
+import io.github.fishstiz.cursors_extended.config.Config;
+import io.github.fishstiz.cursors_extended.util.CursorTypeUtil;
+import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.lwjgl.system.MemoryUtil;
+
+import java.io.IOException;
+import java.util.*;
+
+public final class CursorManager {
+    public static final CursorManager INSTANCE = new CursorManager();
+    private final Map<String, Cursor> cursors = new Object2ObjectLinkedOpenHashMap<>();
+    private final TreeMap<Integer, String> overrides = new TreeMap<>();
+    private final AnimationState animationState = new AnimationState();
+    private @NotNull Cursor currentCursor = Cursor.createDummy();
+    private @NotNull CursorRenderer renderer = CursorsExtended.CONFIG.isVirtualMode() ? new CursorRenderer.Virtual() : new CursorRenderer.Native();
+
+    private CursorManager() {
+    }
+
+    public void registerType(CursorType cursorType) {
+        this.cursors.put(cursorType.toString(), new Cursor(cursorType, this::onLoad));
+    }
+
+    public void loadCursor(
+            Cursor cursor,
+            NativeImage image,
+            Config.Settings settings,
+            @Nullable AnimationData animation
+    ) throws IOException {
+        if (!cursors.containsKey(cursor.getTypeName())) {
+            throw new IllegalStateException("Attempting to load an unregistered cursor: " + cursor.getTypeName());
+        }
+
+        boolean animated = animation != null;
+        if (animated != (cursor instanceof AnimatedCursor)) {
+            cursor.destroy();
+            cursor = animated
+                    ? new AnimatedCursor(cursor.getType(), this::onLoad)
+                    : new Cursor(cursor.getType(), this::onLoad);
+            cursors.put(cursor.getTypeName(), cursor);
+        }
+
+        if (cursor instanceof AnimatedCursor animatedCursor) {
+            animatedCursor.loadImage(image, settings, animation);
+        } else {
+            cursor.loadImage(image, settings);
+        }
+    }
+
+    private void onLoad(Cursor cursor) {
+        Cursor appliedCursor = getAppliedCursor();
+        if (appliedCursor.isLoaded() &&
+            appliedCursor.getId() == cursor.getId() &&
+            CursorTypeUtil.nameEquals(appliedCursor.getType(), cursor.getType())) {
+            reapplyCursor();
+        }
+    }
+
+    public void setCurrentCursor(@NotNull CursorType type) {
+        Cursor override = getOverride();
+        Cursor cursor = override != null ? override : this.cursors.get(type.toString());
+
+        if (cursor instanceof AnimatedCursor animatedCursor && cursor.getId() != MemoryUtil.NULL) {
+            handleCursorAnimation(animatedCursor);
+            return;
+        }
+
+        if (cursor == null || type != CursorType.DEFAULT && cursor.getId() == MemoryUtil.NULL || !cursor.isEnabled()) {
+            cursor = getCursor(CursorType.DEFAULT);
+        }
+
+        updateCursor(cursor);
+    }
+
+    private void handleCursorAnimation(AnimatedCursor cursor) {
+        if (!CursorTypeUtil.nameEquals(getAppliedCursor().getType(), cursor.getType())) {
+            animationState.reset();
+        }
+
+        Cursor currentFrameCursor = cursor.nextFrame(animationState).cursor();
+        updateCursor(currentFrameCursor.getId() != 0 ? currentFrameCursor : cursor);
+    }
+
+    private void updateCursor(Cursor cursor) {
+        if (cursor == null || !CursorsExtended.CONFIG.isAggressiveCursor() && cursor.getId() == currentCursor.getId()) {
+            return;
+        }
+
+        this.currentCursor = cursor;
+        this.renderer.setCursor(this.currentCursor);
+    }
+
+    public void reapplyCursor() {
+        this.renderer.setCursor(this.getAppliedCursor());
+    }
+
+    public void overrideCursor(CursorType type, int index) {
+        Cursor cursor = getCursor(type);
+        if (cursor != null && cursor.isEnabled()) {
+            overrides.put(index, type.toString());
+        } else {
+            overrides.remove(index);
+        }
+    }
+
+    public void removeOverride(int index) {
+        overrides.remove(index);
+    }
+
+    public @Nullable Cursor getOverride() {
+        while (!overrides.isEmpty()) {
+            Map.Entry<Integer, String> lastEntry = overrides.lastEntry();
+            Cursor cursor = this.cursors.get(lastEntry.getValue());
+
+            if (cursor == null || cursor.getId() == 0) {
+                overrides.remove(lastEntry.getKey());
+            } else {
+                return cursor;
+            }
+        }
+
+        return null;
+    }
+
+    public @NotNull Cursor getAppliedCursor() {
+        Cursor override = getOverride();
+        Cursor cursor = override != null ? override : currentCursor;
+
+        if (cursor instanceof AnimatedCursor animatedCursor) {
+            return animatedCursor.getFrame(animationState.getCurrentFrame()).cursor();
+        }
+
+        return cursor;
+    }
+
+    public boolean isEnabled(@NotNull CursorType type) {
+        return isEnabled(cursors.get(type.toString()));
+    }
+
+    public boolean isEnabled(@Nullable Cursor cursor) {
+        return cursor != null && cursor.isEnabled();
+    }
+
+    public @Nullable Cursor getCursor(CursorType type) {
+        return cursors.get(type.toString());
+    }
+
+    public @Nullable Cursor getCursor(String type) {
+        return cursors.get(type);
+    }
+
+    public long getCurrentId() {
+        return getAppliedCursor().getId();
+    }
+
+    public Collection<Cursor> getCursors() {
+        return cursors.values();
+    }
+
+    public boolean isActive() {
+        for (Cursor cursor : this.cursors.values()) {
+            if (cursor.isEnabled()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isAdaptive() {
+        for (Cursor cursor : this.cursors.values()) {
+            if (cursor.isEnabled() && cursor.getType() != CursorType.DEFAULT) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isVirtual() {
+        return this.renderer instanceof CursorRenderer.Virtual;
+    }
+
+    public void toggleVirtual() {
+        this.renderer.resetCursor();
+        this.renderer = this.isVirtual() ? new CursorRenderer.Native() : new CursorRenderer.Virtual();
+        this.reapplyCursor();
+    }
+
+    public void renderCursor(Minecraft minecraft, GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        this.renderer.render(minecraft, guiGraphics, mouseX, mouseY);
+    }
+}
